@@ -1,0 +1,64 @@
+--[[
+ Debian CC Extended - libtool utility
+ 
+ Used to register files as libraries.
+--]]
+
+function errorMsg()
+ printError("Usage: libtool <reg/unreg/list/restore> <file>")
+ printError("reg: Registers a file in System Assembly Cache.")
+ printError("unreg: Unregisters an assembly.")
+ printError("list: Lists all installed assemblies.")
+ printError("restore: Restores a most recent backup of SAC.")
+end
+
+function regAssembly(file, assemblyName)
+ local stream = fs.open("/system/lib/libs.index", "a")
+ fs.copy(file, "/system/lib/"..assemblyName)
+ fs.copy("/system/lib/libs.index", "/system/lib/libs.index_backup")
+ stream.writeLine(assemblyName)
+ stream.close()
+ print(" Assembly "..assemblyName.."\n from file "..file.."\n registered successfully")
+end
+
+function unRegAssembly(assemblyName) -- Thanks people on CC Forum for this solution.
+ if contents["/system/lib/libs.index"] then --#if it is there
+    local file = fs.open("/system/lib/libs.index", "w")
+    for k, v in pairs( contents ) do --#iterate
+      if assemblyName ~= k then --#if it's not the line to delete
+        file.writeLine( k ) --#write it down
+      end
+    end
+ else
+  error("No such assembly")
+ end
+ file.close()
+end
+
+lArgs = {...}
+if #lArgs < 1 then
+ errorMsg()
+elseif lArgs[1]=="reg" then
+ if lArgs[2]==nil then
+  errorMsg()
+ else
+  regAssembly(lArgs[2], lArgs[2])
+ end
+elseif lArgs[1]=="unreg" then
+ if lArgs[2]==nil then
+  errorMsg()
+ else
+  unRegAssembly(lArgs[2])
+ end
+elseif lArgs[1]=="list" then
+ local fileIndex = fs.open("/system/lib/libs.index", "r")
+ local data = fileIndex.readAll()
+ print(data)
+ fileIndex.close()
+elseif lArgs[1]=="restore" then
+ if fs.exists("/system/lib/libs.index_backup") then
+  fs.move("/system/lib/libs.index_backup", "/system/lib/libs.index")
+ else
+  error("Backup file does not exist")
+ end
+end

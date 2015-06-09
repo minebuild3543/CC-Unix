@@ -1,0 +1,449 @@
+-- Computer Craft Commander by kornichen
+-- Recently modified on 04 February 2015
+
+local w, h = term.getSize()
+local currentScreen = "mainScreen"
+local botBarNumberPositions = {1, 6, 11, 16, 21, 26, 31, 35, 39, 46}
+local botBarItems = {"Help", "Menu", "View", "Edit", "Copy", "ReMv", "Mkd", "Del", "PullDn", "Quit"}
+local grid = {
+	{"p", 1, 1, "+"},
+	{"p", 1, h - 2, "+"},
+	{"p", (w / 2) + 1, 1, "+"},
+	{"p", (w / 2) + 1, h - 2, "+"},
+	{"p", w, 1, "+"},
+	{"p", w, h - 2, "+"},
+	{"l", 1, 2, 1, h - 3, "|"},
+	{"l", (w / 2) + 1, 2, (w / 2) + 1, h - 3, "|"},
+	{"l", w, 2, w, h - 3, "|"},
+	{"l", 2, 1, w / 2, 1, "-"},
+	{"l", 2, h - 2, w / 2, h - 2, "-"},
+	{"l", (w / 2) + 2, 1, w, 1, "-"},
+	{"l", (w / 2) + 2, h - 2, w , h - 2, "-"},
+	{"p", 2, 2, "FILE"},
+	{"p", (w / 2) - 3, 2, "SIZE"},
+	{"p", (w / 2) + 2, 2, "FILE"},
+	{"p", w - 4, 2, "SIZE"},
+}
+local currentPathLeft = "/"
+local currentPathRight = "/"
+local fileListLeft = fs.list(currentPathLeft)
+local fileListRight = fs.list(currentPathRight)
+local activeColumn = "left"
+local oldActiveItemLeft = 0
+local oldActiveItemRight = 0
+local activeItemLeft = 1
+local activeItemRight = 1
+local pageLeft = 1
+local pageRight = 1
+local pagesLeft = 1
+local pagesRight = 1
+local currentCommand = ""
+local nextCharIsCapital = false
+local fileListLength = h - 5
+
+local function drawMainScreen()
+	term.setTextColor(colors.white)
+	term.setBackgroundColor(colors.blue)
+	term.clear()
+	for i = 1, #grid do
+		if grid[i][1] == "p" then
+			term.setCursorPos(grid[i][2], grid[i][3])
+			term.write(grid[i][4])
+		elseif grid[i][1] == "l" then
+			if grid[i][2] == grid[i][4] then
+				for j = grid[i][3], grid[i][5] do
+					term.setCursorPos(grid[i][2], j)
+					term.write(grid[i][6])
+				end
+			elseif grid[i][3] == grid[i][5] then
+				for j = grid[i][2], grid[i][4] do
+					term.setCursorPos(j, grid[i][3])
+					term.write(grid[i][6])
+				end
+			end
+		end
+	end
+	term.setBackgroundColor(colors.black)
+	term.setCursorPos(1, h - 1)
+	term.clearLine()
+	term.setCursorPos(1, h)
+	term.setBackgroundColor(colors.cyan)
+	term.clearLine()
+	for i = 1, #botBarNumberPositions do
+		term.setTextColor(colors.lightGray)
+		term.setBackgroundColor(colors.black)
+		term.setCursorPos(botBarNumberPositions[i], h)
+		term.write(tostring(i))
+		term.setTextColor(colors.black)
+		term.setBackgroundColor(colors.cyan)
+		term.write(botBarItems[i])
+	end
+
+	if fs.list(currentPathLeft) ~= fileListLeft or oldActiveItemLeft ~= activeItemLeft then
+		fileListLeft = fs.list(currentPathLeft)
+		table.insert(fileListLeft, 1, "..")
+		pageLeft = math.ceil(activeItemLeft / fileListLength)
+		pagesLeft = math.ceil(#fileListLeft / fileListLength)
+		local startItem = (fileListLength * (pageLeft - 1)) + 1
+		local endItem = 0
+		if pageLeft == pages then
+			endItem = #fileListLeft % pages
+		else
+			endItem = fileListLength * pageLeft
+		end
+		for i = startItem, endItem do
+			if i == activeItemLeft then
+				term.setTextColor(colors.white)
+				term.setBackgroundColor(colors.cyan)
+				term.setCursorPos(2, i - (fileListLength * (pageLeft - 1)) + 2)
+				for j = 2, w / 2 do
+					write(" ")
+				end
+			else
+				term.setTextColor(colors.white)
+				term.setBackgroundColor(colors.blue)
+			end
+			term.setCursorPos(2, i - (fileListLength * (pageLeft - 1)) + 2)
+			term.write(fileListLeft[i] or "")
+			term.setCursorPos((w / 2) - 5, i - (fileListLength * (pageLeft - 1)) + 2)
+			if fileListLeft[i] ~= ".." then
+				if currentPathLeft == "/" then
+					if i <= #fileListLeft then
+						term.write(" " .. fs.getSize(currentPathLeft .. fileListLeft[i]))
+					end
+				else
+					if i <= #fileListLeft then
+						term.write(" " .. fs.getSize(currentPathLeft .. "/" .. fileListLeft[i]))
+					end
+				end
+			end
+		end
+	end
+	if fs.list(currentPathRight) ~= fileListRight or oldActiveItemRight ~= activeItemRight then
+		fileListRight = fs.list(currentPathRight)
+		table.insert(fileListRight, 1, "..")
+		pageRight = math.ceil(activeItemRight / fileListLength)
+		pagesRight = math.ceil(#fileListRight / fileListLength)
+		local startItem = (fileListLength * (pageRight - 1)) + 1
+		local endItem = 0
+		if pageRight == pages then
+			endItem = #fileListRight % pages
+		else
+			endItem = fileListLength * pageRight
+		end
+		for i = startItem, endItem do
+			if i == activeItemRight then
+				term.setTextColor(colors.white)
+				term.setBackgroundColor(colors.cyan)
+				term.setCursorPos((w / 2) + 2, i - (fileListLength * (pageRight - 1)) + 2)
+				for j = 2, w / 2 do
+					write(" ")
+				end
+			else
+				term.setTextColor(colors.white)
+				term.setBackgroundColor(colors.blue)
+			end
+			term.setCursorPos((w / 2) + 2, i - (fileListLength * (pageRight - 1)) + 2)
+			term.write(fileListRight[i] or "")
+			term.setCursorPos(w - 6, i - (fileListLength * (pageRight - 1)) + 2)
+			if fileListRight[i] ~= ".." then
+				if currentPathRight == "/" then
+					if i <= #fileListRight then
+						term.write(" " .. fs.getSize(currentPathRight .. fileListRight[i]))
+					end
+				else
+					if i <= #fileListRight then
+						term.write(" " .. fs.getSize(currentPathRight .. "/" .. fileListRight[i]))
+					end
+				end
+			end
+		end
+	end
+	term.setTextColor(colors.lightGray)
+	term.setBackgroundColor(colors.black)
+	term.setCursorPos(1, h - 1)
+	if activeColumn == "left" then
+		term.write(currentPathLeft .. "> " .. currentCommand)
+	elseif activeColumn == "right" then
+		term.write(currentPathRight .. "> " .. currentCommand)
+	end
+end
+
+local function drawInputBox(title, text)
+	term.setTextColor(colors.black)
+	term.setBackgroundColor(colors.lightGray)
+	for y = (h / 2) - 4, (h / 2) + 4 do
+		for x = (w / 2) - 15, (w / 2) + 15 do
+			term.setCursorPos(x, y)
+			if y == (h / 2) - 4 then
+				term.write(" ")
+			elseif y == (h / 2) + 4 then
+				term.write(" ")
+			elseif y == (h / 2) - 3 then
+				if x == (w / 2) - 15 then
+					term.write(" ")
+				elseif x == (w / 2) + 15 then
+					term.write(" ")
+				elseif x == (w / 2) - 14 then
+					term.write("+")
+				elseif x == (w / 2) + 14 then
+					term.write("+")
+				else
+					term.write("-")
+				end
+			elseif y == (h / 2) + 1 then
+				if x == (w / 2) - 14 then
+					term.write("|")
+				elseif x == (w / 2) + 14 then
+					term.write("|")
+				else
+					if x > (w / 2) - 13 and x < (w / 2) + 13 then
+						term.setBackgroundColor(colors.black)
+						term.write(" ")
+						term.setBackgroundColor(colors.lightGray)
+					else
+						term.write(" ")
+					end
+
+				end
+			elseif y == (h / 2) + 3 then
+				if x == (w / 2) - 15 then
+					term.write(" ")
+				elseif x == (w / 2) + 15 then
+					term.write(" ")
+				elseif x == (w / 2) - 14 then
+					term.write("+")
+				elseif x == (w / 2) + 14 then
+					term.write("+")
+				else
+					term.write("-")
+				end
+			else
+				if x == (w / 2) - 14 then
+					term.write("|")
+				elseif x == (w / 2) + 14 then
+					term.write("|")
+				else
+					term.write(" ")
+				end
+			end
+		end
+	end
+	term.setTextColor(colors.blue)
+	term.setCursorPos((w / 2) - (string.len(title) / 2), (h / 2) - 3)
+	term.write(" " .. title .. " ")
+	term.setTextColor(colors.black)
+	term.setCursorPos((w / 2) - 12, (h / 2) - 1)
+	term.write(text)
+	term.setTextColor(colors.white)
+	term.setBackgroundColor(colors.black)
+	term.setCursorPos((w / 2) - 12, (h / 2) + 1)
+	return read()
+end
+
+local function getParentPath(path)
+	local slashPos = 0
+	local i = string.len(path) - 1
+	while slashPos == 0 do
+		if string.sub(path, i, i) == "/" then
+			slashPos = i
+		end
+		i = i - 1
+	end
+	return string.sub(path, 1, i)
+end
+
+term.setCursorBlink(true)
+
+while true do
+	drawMainScreen()
+	local event, button, x, y = os.pullEvent()
+	if currentScreen == "mainScreen" then
+		if event == "key" then
+			local char = keys.getName(button)
+			if char == "space" then
+				char = " "
+			elseif char == "leftShift" or char == "rightShift" then
+				nextCharIsCapital = true
+				char = ""
+			elseif char == "up" then
+				if activeColumn == "left" then
+					if activeItemLeft > 1 then
+						activeItemLeft = activeItemLeft - 1
+					end
+				elseif activeColumn == "right" then
+					if activeItemRight > 1 then
+						activeItemRight = activeItemRight - 1
+					end
+				end
+				char = ""
+			elseif char == "down" then
+				if activeColumn == "left" then
+					if activeItemLeft < #fileListLeft then
+						activeItemLeft = activeItemLeft + 1
+					end
+				elseif activeColumn == "right" then
+					if activeItemRight < #fileListRight then
+						activeItemRight = activeItemRight + 1
+					end
+				end
+				char = ""
+			elseif char == "tab" then
+				if activeColumn == "left" then
+					activeColumn = "right"
+				elseif activeColumn == "right" then
+					activeColumn = "left"
+				end
+				char = ""
+			elseif char == "backspace" then
+				currentCommand = string.sub(currentCommand, 1, string.len(currentCommand) - 1)
+				char = ""
+			elseif char == "enter" then
+				if currentCommand == "" then
+					if activeColumn == "left" then
+						if fileListLeft[activeItemLeft] == ".." then
+							if currentPathLeft ~= "/" then
+								currentPathLeft = getParentPath(currentPathLeft)
+								if currentPathLeft == "" then
+									currentPathLeft = "/"
+								end
+								activeItemLeft = 1
+								pageLeft = 1
+							end
+						elseif fs.isDir(currentPathLeft .. "/" .. fileListLeft[activeItemLeft]) then
+							if currentPathLeft == "/" then
+								currentPathLeft = currentPathLeft .. fileListLeft[activeItemLeft]
+							else
+								currentPathLeft = currentPathLeft .. "/" .. fileListLeft[activeItemLeft]
+							end
+							activeItemLeft = 1
+							pageLeft = 1
+						end
+					elseif activeColumn == "right" then
+						if fileListRight[activeItemRight] == ".." then
+							if currentPathRight ~= "/" then
+								currentPathRight = getParentPath(currentPathRight)
+								if currentPathRight == "" then
+									currentPathRight = "/"
+								end
+								activeItemRight = 1
+								pageRight = 1
+							end
+						elseif fs.isDir(currentPathRight .. "/" .. fileListRight[activeItemRight]) then
+							if currentPathRight == "/" then
+								currentPathRight = currentPathRight .. fileListRight[activeItemRight]
+							else
+								currentPathRight = currentPathRight .. "/" .. fileListRight[activeItemRight]
+							end
+							activeItemRight = 1
+							pageRight = 1
+						end
+					end
+				else
+					if currentCommand == "exit" then
+						currentCommand = ""
+						error()
+					else
+						currentCommand = ""
+					end
+				end
+				char = ""
+			elseif char == "f1" then
+				--
+			elseif char == "f4" then
+				--
+			elseif char == "f5" then
+				if activeColumn == "left" then
+					if fileListLeft[activeItemLeft] ~= ".." then
+						if currentPathLeft == "/" then
+							fs.copy("/" .. fileListLeft[activeItemLeft], currentPathRight)
+						else
+							fs.copy(currentPathLeft .. "/" .. fileListLeft[activeItemLeft], currentPathRight)
+						end
+					end
+				elseif activeColumn == "right" then
+					if fileListRight[activeItemRight] ~= ".." then
+						if currentPathRight == "/" then
+							fs.copy("/" .. fileListRight[activeItemRight], currentPathLeft)
+						else
+							fs.copy(currentPathRight .. "/" .. fileListRight[activeItemRight], currentPathLeft)
+						end
+					end
+				end
+				char = ""
+			elseif char == "f6" then
+				local newFileName = drawInputBox("Move file", "New filename:")
+				if activeColumn == "left" then
+					if fileListLeft[activeItemLeft] ~= ".." then
+						if currentPathLeft == "/" then
+							fs.copy("/" .. fileListLeft[activeItemLeft], currentPathRight .. "/" .. newFileName)
+						else
+							fs.copy(currentPathLeft .. "/" .. fileListLeft[activeItemLeft], currentPathRight .. "/" .. newFileName)
+						end
+					end
+				elseif activeColumn == "right" then
+					if fileListRight[activeItemRight] ~= ".." then
+						if currentPathRight == "/" then
+							fs.copy("/" .. fileListRight[activeItemRight], currentPathLeft .. "/" .. newFileName)
+						else
+							fs.copy(currentPathRight .. "/" .. fileListRight[activeItemRight], currentPathLeft .. "/" .. newFileName)
+						end
+					end
+				end
+				char = ""
+			elseif char == "f7" then
+				local directory = drawInputBox("Create a new directory", "Enter directory name:")
+				if activeColumn == "left" then
+					if currentPathLeft == "/" then
+						fs.makeDir("/" .. directory)
+					else
+						fs.makeDir(currentPathLeft .. "/" .. directory)
+					end
+				elseif activeColumn == "right" then
+					if currentPathRight == "/" then
+						fs.makeDir("/" .. directory)
+					else
+						fs.makeDir(currentPathRight .. "/" .. directory)
+					end
+				end
+				char = ""
+			elseif char == "f8" then
+				local deleteApproval = drawInputBox("Delete", "Type YES to delete.")
+				if deleteApproval == "YES" then
+					if activeColumn == "left" then
+						if fileListLeft[activeItemLeft] ~= ".." then
+							if currentPathLeft == "/" then
+								fs.delete("/" .. fileListLeft[activeItemLeft])
+							else
+								fs.delete(currentPathLeft .. "/" .. fileListLeft[activeItemLeft])
+							end
+						end
+						activeItemLeft = 1
+						pageLeft = 1
+					elseif activeColumn == "right" then
+						if fileListRight[activeItemRight] ~= ".." then
+							if currentPathRight == "/" then
+								fs.delete("/" .. fileListRight[activeItemRight])
+							else
+								fs.delete(currentPathRight .. "/" .. fileListRight[activeItemRight])
+							end
+						end
+						activeItemRight = 1
+						pageRight = 1
+					end
+				end
+				char = ""
+			elseif char == "f10" then
+				error()
+			end
+			if nextCharIsCapital then
+				if char ~= "" then
+					currentCommand = currentCommand .. string.upper(char)
+					nextCharIsCapital = false
+				end
+			else
+				currentCommand = currentCommand .. char
+			end
+		end
+	end
+end

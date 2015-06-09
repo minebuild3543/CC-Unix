@@ -1,0 +1,17 @@
+arg = {...}
+if #arg == 1 then
+if fs.exists(arg[1])==true then
+if fs.isDir(arg[1])==false then
+local f=fs.open(arg[1], "r")
+print(f.readAll())
+f.close()
+else
+print("<Error> ", arg[1], " is dir!")
+end
+else
+print("<Error> No such file: ", arg[1])
+end
+else
+print("Debian CC Viewer")
+print("Usage: cat /path/to/file")
+end

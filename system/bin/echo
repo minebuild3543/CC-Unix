@@ -1,0 +1,15 @@
+local args={ ... }
+if #args==0 then
+print("Usage: echo <text>")
+else
+local i=1
+while true do
+if args[i]==nil then
+break
+else
+write(args[i] .. " ")
+i=i+1
+end
+end
+print(" ")
+end

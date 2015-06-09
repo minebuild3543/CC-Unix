@@ -1,0 +1,895 @@
+-- VirtualFSLayer
+
+-- Modes of operation:
+-- -1:  No FS loaded
+--  0:  RAM Filesystem (no flush)
+--  1:  Unencrypted Filesystem
+--  2:  Encrypted Filesystem
+--  3:  Networked Filesystem
+
+local canUseEncryptedFS = true
+local canUseNFS = true
+local canUsePasswordedNFS = true
+
+if (not base64) and (not os.loadAPI("base64")) then
+	if http then
+		local h = http.get("http://pastebin.com/raw.php?i=pp3kpb19")
+		if h then
+			local data = h.readAll()
+			h.close()
+			local f = fs.open("/system/lib/base64", "w")
+			f.write(data)
+			f.close()
+			local sac = fs.open("/system/lib/libs.index", "w")
+			f.writeLine("/system/lib/base64")
+			f.close()
+			print("Added Base64 API to System Assembly Cache")
+			if not os.loadAPI("/system/lib/base64") then
+				error("Could not load base64 API!")
+			end
+		else
+			error("Could not load base64 API!")
+		end
+	else
+		error("Could not load base64 API!")
+	end
+end
+
+-- We can't really protect against adversaries modifying the libraries themselves. Oh well.
+if (not AES) and (not os.loadAPI("/system/lib/AES")) then
+	canUseEncryptedFS = false
+	print("Encrypted FS disabled; could not load AES library.")
+end
+
+if (not SHA1) and (not os.loadAPI("/system/lib/SHA1")) then
+	canUseNFS = false
+	print("NetFS disabled; could not load SHA1 library.")
+end
+
+if (not SHA2) and (not os.loadAPI("/system/lib/SHA2")) then
+	canUsePasswordedNFS = false
+	print("Passworded NetFS disabled; could not load SHA2 library.")
+end
+
+local sides = rs.getSides()
+local modem = false
+for i=1, 6 do
+	if peripheral.isPresent(sides[i]) and (peripheral.getType(sides[i]) == "modem") then
+		modem = peripheral.wrap(sides[i])
+		break
+	end
+end
+
+if not modem then
+	canUseNFS = false
+	print("NetFS disabled; could not find modem.")
+end
+
+local fileCache = {
+	files = {},
+	dirs = { [""] = {} },
+} -- list of files contained in the mounted filesystem
+local locks = {} -- list of file locks
+local modTimestamps = {} -- File mod timestamps
+
+local mountPath = "" -- Folder that the encrypted file is "mounted" to
+local loadedFile = "" -- path to the file storing the files
+local key = {}
+local mode = -1
+
+local oldFSOpen = fs.open
+local oldFSDelete = fs.delete
+local oldFSMakeDir = fs.makeDir
+local oldFSList = fs.list
+local oldFSExists = fs.exists
+local oldFSIsDir = fs.isDir
+local oldFSGetDrive = fs.getDrive
+local oldFSMove = fs.move
+local oldFSCopy = fs.copy
+
+local NFSTimeout = 60
+local NFSIdent = "NetFS"
+local NFSChannel = 0xDA7A
+local NFSCredential = {}
+local NFSChecksums = {}
+local NFSServer = -1
+
+if modem then
+	modem.open(NFSChannel)
+end
+
+function flush(verbose)
+	if loadedFile ~= "" then
+		local fCacheCopy = { -- file cache copy, for writing to disk.
+			files = {},
+			dirs = fileCache.dirs,
+		}
+		for file, contents in pairs(fileCache.files) do
+			local rawData = {string.byte(contents, 1, #contents)}
+			local out = ""
+			local isBinary = false
+			for i=1, #contents do
+				local byte = string.byte(contents, i, i)
+				if (byte < 0x20) or (byte > 0x7E) then
+					out = "BINARY:"
+					isBinary = true
+					break
+				end
+				out = out..string.sub(contents, i, i)
+			end
+			if isBinary then
+				out = out..base64.encode(rawData)
+			end
+			fCacheCopy.files[file] = out
+		end
+		if mode == 2 then
+			if verbose then
+				print("1. Preprocessing..")
+			end
+			local iv = {}
+			for i=1, 16 do
+				iv[i] = math.random(0, 255)
+			end
+			--local ivStr = base64.encode(iv)
+			local pText = {}
+			local pText_str = textutils.serialize(fCacheCopy)
+			local lastPause = os.clock()
+			for i=1, #pText_str do
+				pText[i] = string.byte(pText_str, i, i)
+				if (os.clock() - lastPause) >= 2.90 then -- Only pause when necessary
+					os.queueEvent("")
+					os.pullEvent("")
+					lastPause = os.clock()
+				end
+			end
+			if verbose then
+				print("2. Encrypting..")
+			end
+			local cText = AES.encrypt_bytestream(pText, key, iv)
+			--local cText_str = base64.encode(cText)
+			local file = fs.open(loadedFile, "wb")
+			--file.write(ivStr..":"..cText_str)
+			for i=1, 16 do
+				file.write(iv[i])
+			end
+			os.queueEvent("")
+			os.pullEvent("")
+			local lastPause = os.clock()
+			if verbose then
+				print("3. Writing..")
+			end
+			local _, y = term.getCursorPos()
+			for i=1, #cText do
+				if verbose then
+					term.setCursorPos(1, y)
+					term.clearLine()
+					write(math.floor((i/#cText)*100).."% done.")
+				end
+				file.write(cText[i])
+				if (os.clock() - lastPause) >= 2.90 then
+					os.queueEvent("")
+					os.pullEvent("")
+					lastPause = os.clock()
+				end
+			end
+			file.close()
+		elseif mode == 1 then
+			local file = fs.open(loadedFile, "w")
+			local data = textutils.serialize(fCacheCopy)
+			file.write(data)
+			file.close()
+		elseif mode == 3 then
+			-- NFS sync method:
+			-- Step1 / C->S: Request to connect
+			-- Step2 / S->C: Send challenge
+			-- Step3 / C->S: Send response
+			-- Step4 / S->C: Get SHA1 hash of all files on local store,
+			-- Client: Check which versions differ,
+			-- Step5 / C->S: transmit newer versions if necessary and list of files to get
+			-- Client: Write their versions of files to cache if necessary.
+			-- Step6 / S->C: transmit newer versions if necessary.
+			local function compareTimestamps(ts1, ts2)
+				if ts1[1] == ts2[1] then
+					return (ts1[2] > ts2[2])
+				else
+					if ts1[1] > ts2[1] then
+						return true
+					elseif ts1[1] < ts2[1] then
+						return false
+					end
+				end
+			end
+			if verbose then
+				print("Calculating file checksums...")
+			end
+			NFSChecksums = {}
+			local nChecksums = 0
+			local cksumItr = 0
+			for i,v in pairs(fCacheCopy.files) do
+				nChecksums = nChecksums+1
+			end
+			for i,v in pairs(fCacheCopy.files) do
+				cksumItr = cksumItr+1
+				NFSChecksums[i] = SHA1.digest2str(SHA1.digestStr(v))
+				if verbose then
+					print("File "..cksumItr.."/"..nChecksums..": "..i)
+				end
+				os.sleep(0)
+			end
+			--print("Done calculating file checksums.")
+			local state = 1
+			if verbose then print("NFS Server: "..NFSServer) end
+			--print("Sending step 1...")
+			modem.transmit(NFSChannel, NFSChannel, textutils.serialize({NFSIdent, os.computerID(), NFSServer, "Step1"}))
+			--print("Sent step 1.")
+			local timer = os.startTimer(NFSTimeout)
+			local challenge = false
+			local serverHashes = {}
+			while true do
+				local event, side, sCh, rCh, msg = os.pullEvent()
+				if event == "timer" then
+					if side == timer then
+						error("VirtualFSLayer-Sync: Server timed out.", 2)
+					end
+				elseif event == "modem_message" then
+					msg = textutils.unserialize(msg)
+					if type(msg) == "table" then
+						if (msg[1] == NFSIdent) and (msg[3] == os.computerID()) and (msg[2] == NFSServer) then
+							if state == 1 then
+								if msg[4] == "Step2" then
+									if verbose then
+										print("Got step 2 response.")
+									end
+									state = 2
+									challenge = msg[4]
+									local response = {}
+									for i=1, #NFSCredential do
+										response[i] = NFSCredential[i]
+									end
+									for i=1, #challenge do
+										table.insert(response, challenge[i])
+									end
+									response = SHA2.digest(response)
+									--print("Sending step 3...")
+									modem.transmit(NFSChannel, NFSChannel, textutils.serialize({NFSIdent, os.computerID(), NFSServer, "Step3", response}))
+									--print("Sent step 3.")
+								elseif msg[4] == "Step4" then
+									if verbose then print("Skipping to step 4.") end
+									state = 4
+									serverHashes = msg[5]
+									local serverTimestamps = msg[6]
+									local filesToSend = {}
+									local filesToGet = {}
+									for i,v in pairs(NFSChecksums) do
+										if serverHashes[i] ~= v then
+											if serverHashes[i] == nil then
+												if verbose then print("Our version of "..i.." is a new file.") end
+												filesToSend[i] = fileCache.files[i]
+											else
+												if modTimestamps[i] then
+													if verbose then print("Server timestamp is "..serverTimestamps[i][1].."/"..serverTimestamps[i][2]) end
+													if verbose then print("Our timestamp is "..modTimestamps[i][1].."/"..modTimestamps[i][2]) end
+													if compareTimestamps(modTimestamps[i], serverTimestamps[i]) then -- Our version is newer
+														if verbose then print("Our version of "..i.." is newer.") end
+														filesToSend[i] = fCacheCopy.files[i]
+													else
+														if verbose then print("Server version of "..i.." is newer.") end
+														filesToGet[i] = true -- Their version is newer
+													end
+												else -- assume their version is newer
+													if verbose then print("Server version of "..i.." is apparently a new file.") end
+													filesToGet[i] = true
+												end
+											end
+										end
+									end
+									for i,v in pairs(serverHashes) do
+										local file = i
+										file = string.gsub(file, "\\", "/")
+										if string.sub(file, 1, 1) == "/" then file = string.sub(file, 2) end
+										if string.sub(file, #file, #file) == "/" then file = string.sub(file, 1, #file-1) end
+										if (not NFSChecksums[i]) or (not fileCache.files[file]) then
+											filesToGet[i] = true
+										end
+									end
+									--print("Sending step 5...")
+									modem.transmit(NFSChannel, NFSChannel, textutils.serialize({NFSIdent, os.computerID(), NFSServer, "Step5", filesToSend, filesToGet}))
+									--print("Sent step 5.")
+								end
+							elseif state == 2 then
+								if msg[4] == "Step4" then
+									if verbose then print("Got step 4 response.") end
+									state = 4
+									serverHashes = msg[5]
+									local serverTimestamps = msg[6]
+									local filesToSend = {}
+									local filesToGet = {}
+									for i,v in pairs(NFSChecksums) do
+										if serverHashes[i] ~= v then
+											if serverHashes[i] == nil then
+												if verbose then print("Our version of "..i.." is a new file.") end
+												filesToSend[i] = fileCache.files[i]
+											else
+												if modTimestamps[i] then
+													if verbose then print("Server timestamp is "..serverTimestamps[i][1].."/"..serverTimestamps[i][2]) end
+													if verbose then print("Our timestamp is "..modTimestamps[i][1].."/"..modTimestamps[i][2]) end
+													if compareTimestamps(modTimestamps[i], serverTimestamps[i]) then -- Our version is newer
+														if verbose then print("Our version of "..i.." is newer.") end
+														filesToSend[i] = fCacheCopy.files[i]
+													else
+														if verbose then print("Server version of "..i.." is newer.") end
+														filesToGet[i] = true -- Their version is newer
+													end
+												else -- assume their version is newer
+													if verbose then print("Server version of "..i.." is apparently a new file.") end
+													filesToGet[i] = true
+												end
+											end
+										end
+									end
+									for i,v in pairs(serverHashes) do
+										local file = i
+										file = string.gsub(file, "\\", "/")
+										if string.sub(file, 1, 1) == "/" then file = string.sub(file, 2) end
+										if string.sub(file, #file, #file) == "/" then file = string.sub(file, 1, #file-1) end
+										if (not NFSChecksums[i]) or (not fileCache.files[file]) then
+											filesToGet[i] = true
+										end
+									end
+									--print("Sending step 5...")
+									modem.transmit(NFSChannel, NFSChannel, textutils.serialize({NFSIdent, os.computerID(), NFSServer, "Step5", filesToSend, filesToGet}))
+									--print("Sent step 5.")
+								elseif msg[4] == "AuthFailure" then
+									error("NFS-Sync: Authentication failure", 2)
+								end
+							elseif state == 4 then
+								if msg[4] == "Step6" then
+									if verbose then print("Got step 6 response.") end
+									local fSendData = msg[5]
+									for i,v in pairs(fSendData) do
+										local file = i
+										file = string.gsub(file, "\\", "/")
+										if string.sub(file, 1, 1) == "/" then file = string.sub(file, 2) end
+										if string.sub(file, #file, #file) == "/" then file = string.sub(file, 1, #file-1) end
+										if string.sub(v, 1, 7) == "BINARY:" then
+											local data = base64.decode(string.sub(v, 8))
+											fileCache.files[file] = ""
+											for i2=1, #data do
+												fileCache.files[file] = fileCache.files[file]..string.char(data[i2])
+											end
+										else
+											fileCache.files[file] = v
+										end
+									end
+									return
+								end
+							end
+							timer = os.startTimer(NFSTimeout)
+						end
+					end
+				end
+			end
+		end
+	else
+		error("VirtualFSLayer-Flush: No file has been loaded.", 2)
+	end
+end
+
+function unmount()
+	if mode >= 1 then
+		flush()
+	end
+	mode = -1
+	key = {}
+	mountPath = ""
+	locks = {}
+	fileCache = { dirs = { [""] = {} }, files = {} }
+end
+
+function mount(mtPath, file, k)
+	if file then
+		file = string.gsub(file, "\\", "/")
+		if string.sub(file, 1, 1) == "/" then file = string.sub(file, 2) end
+		if string.sub(file, #file, #file) == "/" then file = string.sub(file, 1, #file-1) end
+	end
+	
+	mtPath = string.gsub(mtPath, "\\", "/")
+	if string.sub(mtPath, 1, 1) == "/" then mtPath = string.sub(mtPath, 2) end
+	if string.sub(mtPath, #mtPath, #mtPath) == "/" then mtPath = string.sub(mtPath, 1, #mtPath-1) end
+	
+	if mtPath == "" then
+		error("VirtualFSLayer-Mount: Cannot mount directly to root folder!", 2)
+	end
+	
+	if oldFSExists(mtPath) then
+		error("VirtualFSLayer-Mount: Mount path already exists!", 2)
+	end
+	
+	if loadedFile ~= "" then
+		unmount() -- Unload the current file before loading a new one
+	end
+	
+	if canUseNFS and (string.sub(file, 1, 2) == "c:") then
+		print("Mounting NFS...")
+		NFSCredential = {}
+		if type(k) == "string" then
+			for i=1, #k do
+				NFSCredential[i] = string.byte(k, i, i)
+			end
+		elseif type(k) == "table" then
+			for i=1, #k do
+				NFSCredential[i] = k[i]
+			end
+		elseif type(k) ~= "nil" then
+			error("NFS-Mount: Invalid password type.", 2)
+		end
+		if (#NFSCredential > 0) and (not canUsePasswordedNFS) then
+			error("NFS-Mount: Cannot use passworded NFS!", 2)
+		end
+		NFSServer = tonumber(string.sub(file, 3))
+		if not NFSServer then
+			error("NFS-Mount: Invalid server.", 2)
+		end
+		fileCache = {
+			files = {},
+			dirs = { [""] = {} },
+		}
+		loadedFile = file
+		mountPath = mtPath
+		mode = 3
+		print("Performing inital sync...")
+		flush() -- Sync with server
+		return
+	end
+	
+	if canUseEncryptedFS and k then
+		if type(k) == "string" then
+			if SHA2 then
+				_, k = SHA2.digestStr(k)
+				k = SHA2.hashToBytes(k)
+			else
+				local t = {}
+				for i=1, #k do
+					t[i] = string.byte(k, i, i)
+				end
+				k = t
+			end
+		elseif type(k) ~= "table" then
+			error("VirtualFSLayer-Mount: Needs a string or table as a key!", 2)
+		end
+	end
+	key = {}
+	if canUseEncryptedFS and k then
+		for i=1, #k do
+			if (type(k[i]) == "number") and ((k[i] >= 0) and (k[i] <= 255)) then
+				table.insert(key, k[i])
+			end
+		end
+		if #key < 16 then
+			error("VirtualFSLayer-Mount: Not enough keying data!", 2)
+		end
+	end
+	
+	if canUseEncryptedFS and k and file then
+		mode = 2
+	elseif file then
+		mode = 1
+	else
+		mode = 0
+	end
+	
+	if file and fs.exists(file) then
+		--print(fData)
+		-- File format: [iv (16 bytes / 24 when base64 encoded)]:[encrypted data]
+		if canUseEncryptedFS and k then
+			local iv = {}
+			local encData = {}
+			local f = fs.open(file, "rb")
+			-- Load the IV:
+			for i=1, 16 do
+				local byte = f.read()
+				if byte then
+					table.insert(iv, byte)
+				else
+					f.close()
+					error("VirtualFSLayer-Mount: Invalid file loaded!", 2)
+				end
+			end
+			-- Pause for a bit, and reset the "watchdog" timer:
+			os.queueEvent("")
+			os.pullEvent("")
+			local lastPause = os.clock()
+			-- Read the the encrypted data:
+			while true do
+				local byte = f.read()
+				if byte then
+					table.insert(encData, byte)
+				else
+					break
+				end
+				if (os.clock() - lastPause) >= 2.90 then
+					os.queueEvent("")
+					os.pullEvent("")
+					lastPause = os.clock()
+				end
+			end
+			f.close()
+			print("Loaded data!")
+			--local iv = base64.decode(string.sub(fData, 1, 24))
+			--local encData = base64.decode(string.sub(fData, 26))
+			local decData = AES.decrypt_bytestream(encData, key, iv)
+			local decFileCache = textutils.unserialize(string.char(unpack(decData)))
+			if type(decFileCache) ~= "table" then
+				error("VirtualFSLayer-Mount: Could not decrypt file!", 2)
+			end
+			for file, contents in pairs(decFileCache) do
+				if string.sub(contents, 1, 7) == "BINARY:" then
+					decFileCache.files[file] = string.char(unpack(base64.decode(string.sub(contents, 8))))
+				end
+			end
+			fileCache = decFileCache
+		else
+			local f = fs.open(file, "r")
+			local fData = f.readAll()
+			f.close()
+			local lFileCache = textutils.unserialize(fData)
+			if type(lFileCache) ~= "table" then
+				error("VirtualFSLayer-Mount: Invalid file loaded!", 2)
+			end
+			for file, contents in pairs(lFileCache.files) do
+				if string.sub(contents, 1, 7) == "BINARY:" then
+					lFileCache.files[file] = string.char(unpack(base64.decode(string.sub(contents, 8))))
+				end
+			end
+			fileCache = lFileCache
+		end
+	end
+	loadedFile = file or ""
+	mountPath = mtPath
+end
+
+function unload() -- Remove the hooks we've installed into the FS API. It's up to the caller to unload the API itself.
+	if mode ~= -1 then
+		unmount()
+	end
+	fs.open = oldFSOpen
+	fs.delete = oldFSDelete
+	fs.makeDir = oldFSMakeDir
+	fs.list = oldFSList
+	fs.exists = oldFSExists
+	fs.isDir = oldFSIsDir
+	fs.getDrive = oldFSGetDrive
+	fs.move = oldFSMove
+	fs.copy = oldFSCopy
+end
+
+function makeNFS(server, k) -- mode change to 3
+	if canUseNFS then
+		key = {}
+		print("Mounting NFS...")
+		NFSCredential = {}
+		if type(k) == "string" then
+			for i=1, #k do
+				NFSCredential[i] = string.byte(k, i, i)
+			end
+		elseif type(k) == "table" then
+			for i=1, #k do
+				NFSCredential[i] = k[i]
+			end
+		elseif type(k) ~= "nil" then
+			error("NFS-Mount: Invalid password type.", 2)
+		end
+		if (#NFSCredential > 0) and (not canUsePasswordedNFS) then
+			error("NFS-Mount: Cannot use passworded NFS!", 2)
+		end
+		NFSServer = server
+		if not NFSServer then
+			error("NFS-Mount: Invalid server.", 2)
+		end
+		loadedFile = "c:"..server
+		mode = 3
+		print("Performing inital sync...")
+		flush() -- Sync with server
+	end
+end
+
+function makeEncrypted(k) -- mode change to 2
+	if not canUseEncryptedFS then
+		error("VirtualFSLayer-makeEncrypted: Cannot use encrypted filesystem!", 2)
+	end
+	if type(k) == "string" then
+		if SHA2 then
+			_, k = SHA2.digestStr(k)
+			k = SHA2.hashToBytes(k)
+		else
+			local t = {}
+			for i=1, #k do
+				t[i] = string.byte(k, i, i)
+			end
+			k = t
+		end
+	elseif type(k) ~= "table" then
+		error("VirtualFSLayer-makeEncrypted: Needs a string or table as a key!", 2)
+	end
+	key = {}
+	for i=1, #k do
+		if (type(k[i]) == "number") and ((k[i] >= 0) and (k[i] <= 255)) then
+			table.insert(key, k[i])
+		end
+	end
+	if #key < 16 then
+		error("VirtualFSLayer-makeEncrypted: Not enough keying data!", 2)
+	end
+	mode = 2
+end
+
+function makeUnencrypted() -- mode change to 1
+	mode = 1
+	key = {}
+end
+
+function makeMemdisk() -- mode change to 0
+	mode = 0
+	key = {}
+	loadedFile = ""
+end
+
+function getMountPath()
+	return mountPath
+end
+
+function getLoadedFile()
+	return loadedFile
+end
+
+function setLoadedFile(file)
+	loadedFile = file
+end
+
+function getMode()
+	return mode
+end
+
+local function updateDirTables() -- Update fileCache.dirs
+	for i,v in pairs(fileCache.dirs) do
+		fileCache.dirs[i] = {}
+	end
+	for i,v in pairs(fileCache.files) do
+		if i == fs.getName(i) then -- Bit of a hack, to make files directly inside the mount path work
+			table.insert(fileCache.dirs[""], i)
+		else
+			--print(i)
+			local fileBasePath = string.sub(i, 1, (#i - #fs.getName(i))-1)
+			--print(fileBasePath)
+			if type(fileCache.dirs[fileBasePath]) == "table" then
+				table.insert(fileCache.dirs[fileBasePath], fs.getName(i))
+			end
+		end
+	end
+	for i,v in pairs(fileCache.dirs) do
+		if i == fs.getName(i) then
+			table.insert(fileCache.dirs[""], i)
+		else
+			--print(i)
+			local fileBasePath = string.sub(i, 1, (#i - #fs.getName(i))-1)
+			--print(fileBasePath)
+			if (type(fileCache.dirs[fileBasePath]) == "table") and (fileBasePath ~= i) then
+				table.insert(fileCache.dirs[fileBasePath], fs.getName(i))
+			end
+		end
+	end
+end
+
+fs.open = function(file, mode)
+	-- force paths to a "standard" format:
+	file = string.gsub(file, "\\", "/")
+	if string.sub(file, 1, 1) == "/" then file = string.sub(file, 2) end
+	if string.sub(file, #file, #file) == "/" then file = string.sub(file, 1, #file-1) end
+	local isInMountedPath = false
+	if mode ~= -1 then -- we don't have anything loaded yet, skip the special handling:
+		isInMountedPath = ((string.sub(file, 1, #mountPath) == mountPath) and (mountPath ~= ""))
+		if isInMountedPath then
+			local mountSubpath = string.sub(file, #mountPath+2)
+			if not locks[mountSubpath] then
+				local fileObject = { vfs = true }
+				fileObject.internal = fileCache.files[mountSubpath] or ""
+				fileObject.ptr = 1
+				fileObject.fileHandleIdent = math.random(0, 0xFFFF)
+				locks[mountSubpath] = fileObject.fileHandleIdent
+				fileObject.close = function() 
+					if locks[mountSubpath] == fileObject.fileHandleIdent then -- Keep us from writing to the cache twice
+						if fileCache.files[mountSubpath] ~= fileObject.internal then
+							modTimestamps[mountSubpath] = {os.day(), os.time()}
+						end
+						fileCache.files[mountSubpath] = fileObject.internal
+						locks[mountSubpath] = nil 
+					end
+				end
+				if string.sub(mode, 1, 1) == "r" then
+					if string.sub(mode, 2, 2) == "b" then
+						fileObject.read = function()
+							fileObject.ptr = fileObject.ptr+1
+							return string.byte(fileObject.internal, fileObject.ptr-1, fileObject.ptr-1)
+						end
+					else
+						fileObject.readAll = function()
+							local ret = string.sub(fileObject.ptr, #fileObject.internal)
+							fileObject.ptr = #fileObject.internal+1
+							if ret == "" then
+								ret = nil
+							end
+							return ret
+						end
+						fileObject.readLine = function()
+							local stPtr = fileObject.ptr
+							for i=fileObject.ptr, #fileObject.internal do
+								if (string.sub(fileObject.internal, i, i) == "\n") or (string.sub(fileObject.internal, i, i) == "") then
+									fileObject.ptr = i+1
+									return string.sub(fileObject.internal, stPtr, i-1)
+								end
+							end
+						end
+					end
+				elseif (string.sub(mode, 1, 1) == "w") or (string.sub(mode, 1, 1) == "a") then
+					if string.sub(mode, 1, 1) == "w" then
+						fileObject.internal = ""
+					end
+					if string.sub(mode, 2, 2) == "b" then
+						fileObject.write = function(b)
+							fileObject.internal = fileObject.internal..string.char(b)
+						end
+					else
+						fileObject.writeLine = function(t)
+							fileObject.internal = fileObject.internal..t..'\n'
+						end
+						fileObject.write = function(t)
+							fileObject.internal = fileObject.internal..t
+						end
+					end
+				end
+				return fileObject
+			end
+		end
+	end
+	return oldFSOpen(file, mode)
+end
+
+fs.exists = function(path)
+	path = string.gsub(path, "\\", "/")
+	if string.sub(path, 1, 1) == "/" then path = string.sub(path, 2) end
+	if string.sub(path, #path, #path) == "/" then path = string.sub(path, 1, #path-1) end
+	if ((string.sub(path, 1, #mountPath) == mountPath) and (mountPath ~= "")) then
+		return ((fileCache.files[string.sub(path, #mountPath+2)] ~= nil) or (fileCache.dirs[string.sub(path, #mountPath+2)] ~= nil))
+	else
+		return oldFSExists(path)
+	end
+end
+
+fs.isDir = function(path)
+	path = string.gsub(path, "\\", "/")
+	if string.sub(path, 1, 1) == "/" then path = string.sub(path, 2) end
+	if string.sub(path, #path, #path) == "/" then path = string.sub(path, 1, #path-1) end
+	if ((string.sub(path, 1, #mountPath) == mountPath) and (mountPath ~= "")) then
+		return (fs.exists(path) and (fileCache.dirs[string.sub(path, #mountPath+2)] ~= nil))
+	else
+		return oldFSIsDir(path)
+	end
+end
+
+fs.makeDir = function(dir)
+	dir = string.gsub(dir, "\\", "/")
+	if string.sub(dir, 1, 1) == "/" then dir = string.sub(dir, 2) end
+	if string.sub(dir, #dir, #dir) == "/" then dir = string.sub(dir, 1, #dir-1) end -- Strip first and last characters if they're slashes: '/a/b/c/' becomes 'a/b/c'
+	if ((string.sub(dir, 1, #mountPath) == mountPath) and (mountPath ~= "")) then
+		if not fileCache.dirs[string.sub(dir, #mountPath+2)] then
+			fileCache.dirs[string.sub(dir, #mountPath+2)] = {}
+		end
+	else
+		oldFSMakeDir(dir)
+	end
+end
+
+fs.delete = function(path)
+	path = string.gsub(path, "\\", "/")
+	if string.sub(path, 1, 1) == "/" then path = string.sub(path, 2) end
+	if string.sub(path, #path, #path) == "/" then path = string.sub(path, 1, #path-1) end
+	if ((string.sub(path, 1, #mountPath) == mountPath) and (mountPath ~= "")) then
+		if fs.isDir(path) then
+			fileCache.dirs[string.sub(path, #mountPath+2)] = nil
+		else
+			fileCache.files[string.sub(path, #mountPath+2)] = nil
+		end
+	else
+		oldFSDelete(path)
+	end
+end
+
+fs.getDrive = function(path)
+	path = string.gsub(path, "\\", "/")
+	if string.sub(path, 1, 1) == "/" then path = string.sub(path, 2) end
+	if string.sub(path, #path, #path) == "/" then path = string.sub(path, 1, #path-1) end
+	if ((string.sub(path, 1, #mountPath) == mountPath) and (mountPath ~= "")) then
+		return "virtual filesystem"
+	else
+		return oldFSGetDrive(path)
+	end
+end
+
+fs.list = function(dir)
+	dir = string.gsub(dir, "\\", "/")
+	if string.sub(dir, 1, 1) == "/" then dir = string.sub(dir, 2) end
+	if string.sub(dir, #dir, #dir) == "/" then dir = string.sub(dir, 1, #dir-1) end
+	if ((string.sub(dir, 1, #mountPath) == mountPath) and (mountPath ~= "")) then
+		if fileCache.dirs[string.sub(dir, #mountPath+2)] then
+			updateDirTables()
+			local list = {}
+			for i=1, #fileCache.dirs[string.sub(dir, #mountPath+2)] do
+				list[i] = fileCache.dirs[string.sub(dir, #mountPath+2)][i]
+			end
+			return list
+		end
+	else
+		local list = oldFSList(dir)
+		if ((dir ~= "") and (dir.."/"..fs.getName(mountPath) == mountPath)) or ((dir == "") and (fs.getName(mountPath) == mountPath)) then
+			table.insert(list, fs.getName(mountPath))
+		end
+		return list
+	end
+	return {}
+end
+
+fs.copy = function(oldPath, newPath)
+	if not (fs.exists(oldPath) and (not fs.exists(newPath))) then
+		return
+	end
+	if mode ~= -1 then
+		if (string.sub(oldPath, 1, #mountPath) == mountPath) and (string.sub(newPath, 1, #mountPath) == mountPath) then -- copying from the cache to itself
+			fileCache.files[string.sub(newPath, #mountPath+2)] = fileCache.files[string.sub(oldPath, #mountPath+2)]
+		elseif (string.sub(oldPath, 1, #mountPath) == mountPath) and (not (string.sub(newPath, 1, #mountPath) == mountPath)) then -- copying from the cache to disk
+			local file = fs.open(newPath, "wb")
+			local lastPause = os.clock()
+			for i=1, #fileCache.files[string.sub(oldPath, #mountPath+2)] do
+				file.write(string.byte(fileCache.files[string.sub(oldPath, #mountPath+2)], i, i))
+				if (os.clock() - lastPause) >= 2.90 then
+					os.queueEvent("")
+					os.pullEvent("")
+					lastPause = os.clock()
+				end
+			end
+			file.close()
+		elseif (not (string.sub(oldPath, 1, #mountPath) == mountPath)) and (string.sub(newPath, 1, #mountPath) == mountPath) then -- copying from disk to the cache
+			local file = fs.open(oldPath, "rb")
+			fileCache.files[string.sub(newPath, #mountPath+2)] = ""
+			local lastPause = os.clock()
+			while true do
+				local byte = file.read()
+				if not byte then
+					file.close()
+					break
+				end
+				fileCache.files[string.sub(newPath, #mountPath+2)] = fileCache.files[string.sub(newPath, #mountPath+2)]..string.char(byte)
+				if (os.clock() - lastPause) >= 2.90 then
+					os.queueEvent("")
+					os.pullEvent("")
+					lastPause = os.clock()
+				end
+			end
+		else -- copying from disk to disk
+			oldFSCopy(oldPath, newPath)
+		end
+	else -- again, disk->disk copy
+		oldFSCopy(oldPath, newPath)
+	end
+end
+
+fs.move = function(oldPath, newPath)
+	if not (fs.exists(oldPath) and (not fs.exists(newPath))) then
+		return
+	end
+	if (((string.sub(oldPath, 1, #mountPath) == mountPath) or (string.sub(newPath, 1, #mountPath) == mountPath)) and (mountPath ~= "")) then -- moving to or from the cache
+		fs.copy(oldPath, newPath)
+		fs.delete(oldPath)
+	else
+		oldFSMove(oldPath, newPath)
+	end
+end

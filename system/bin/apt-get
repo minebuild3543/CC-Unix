@@ -1,0 +1,74 @@
+args = {...}
+Mode = args[1]
+PackName = args[2]
+Code = nil
+Name = nil
+Dir = "/bin"
+
+if not fs.exists(Dir) then
+ print(Dir.." not found, creating...")
+ sleep(1)
+ fs.makeDir(Dir)
+end
+
+if Mode == nil then
+ print("apt-get <mode>")
+ print("install: download a package")
+ print("list: list available packages")
+elseif Mode == "install" then
+ if PackName == nil then
+  print("apt-get install <package>")
+  print("Downloads a package to the /usr/bin directory.")
+ elseif PackName == "firewolf" then
+  Code = "A7wGH3ty"
+  Name = "firewolf"
+ elseif PackName == "wysiwrite" then
+  Code = "3MqtuS9P"
+  Name = "wysiwrite"
+ elseif PackName == "ftp-universal" then
+  Code = "bihLMhkX"
+  Name = "ftp-universal"
+ elseif PackName == "lgrub2" then
+  Code = "N3917AaN"
+  Name = "lg2-inst"
+  if fs.exists("/startup") then
+  term.setTextColor(colors.red)
+  print("This package belongs to LuaGRUB2.")
+  print("LuaGRUB2 is a boot loader for CC. It will replace")
+  print("your Startup file. Press any key to initiate")
+  print("emergency Startup file backup procedure.")
+  term.setTextColor(colors.white)
+  os.pullEvent("key")
+  print("Executing Startup file backup..")
+  fs.copy("/startup", "/startup.old")
+  end
+ elseif PackName == "luaide" then
+  Code = "vyAZc6tJ"
+  Name = "luaide"
+ elseif PackName == "guide" then
+  Code = "0hnDQXxv"
+  Name = "guide"
+ elseif PackName == "stpress" then
+  Code = "G5t1CK8U"
+  Name = "steampress"
+ elseif PackName == "eas-server" then
+  Code = "qsYhNFM4"
+  Name = "eas"
+ elseif PackName == "eas-decoder" then
+  Code = "YuJiVFTK"
+  Name = "decoder"
+ end
+ shell.run("pastebin get "..Code.." "..Dir.."/"..Name)
+ print("Downloaded to "..Dir.."/"..Name)
+elseif Mode == "list" then
+ print("Available packages:")
+ print("Firewolf - apt-get install firewolf")
+ print("WYSIWrite - apt-get install wysiwrite")
+ print("FTP - apt-get install ftp-universal")
+ print("LuaGRUB2 - apt-get install lgrub2")
+ print("LuaIDE - apt-get install luaide")
+ print("GUIDE (GUI IDE) - apt-get install guide")
+ print("Steampress - apt-get install stpress")
+ print("EAS Server - apt-get install eas-server")
+ print("EAS Decoder - apt-get install eas-decoder")
+end

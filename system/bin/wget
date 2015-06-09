@@ -1,0 +1,17 @@
+local args={...}
+  if #args==2 or #args==1 then
+  if args[2]==nil then args[2]=fs.getName(args[1]) end
+path=("/" .. shell.dir() .. "/" .. args[2])
+print("Saving file as: " .. path)
+write("Downloading file.. ")
+DebAPI.getFile(args[1], path)
+print("Done")
+elseif #args==3 and args[2]=="--full-path" then
+print("Saving file as: " .. args[3])
+write("Downloading file.. ")
+DebAPI.getFile(args[1], args[3])
+print("Done")
+else
+print("Usage: wget <http://filestorage.org/files/file.lua> [Optional: <file name>]")
+print("Or wget http://filestorage.org/files/file.lua --full-path /disk/other-file.lua to save file with absolutely full path")
+end

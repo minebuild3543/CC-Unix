@@ -1,0 +1,286 @@
+--[[ MADE BY COLUMNA1 PLEASE DONT DISTRIBUTE WITHOUT PERMISSION ]]--
+
+--update code
+local err = true
+
+if http then
+  local version = "1.1"
+  local data = version
+  local up = http.get("http://pastebin.com/raw.php?i=PCjGdaM5")
+  if up then
+    data = up.readAll()
+    up.close()
+  else
+    print("Error grabbing update data.")
+	data = nil
+  end
+  if data and version ~= data then
+   	print("Updating...")
+	local pro = shell.getRunningProgram()
+	local prog = http.get("http://pastebin.com/raw.php?i=bcgmNT2Q")
+	if prog then
+	  local data2 = prog.readAll()
+	  prog.close()
+	  fs.delete(pro)
+	  file = fs.open(pro,"w")
+	  file.write(data2)
+	  file.close()
+	  err = false
+	  print("Finished updating please run again.")
+	else
+	  print("Problem grabbing update.")
+	end
+  end
+end
+
+
+local arg = {...}
+
+local function printUsage()
+  term.setTextColor(colors.red)
+  print("Usage: \"tar c directory file.tar\" or \"tar u file\"")
+  print("THIS PROGRAM USES ABSOLUTE PATHS!!")
+  term.setTextColor(colors.white)
+  err = false
+end
+
+
+if #arg < 1 and err then
+  printUsage()
+end
+
+if err then
+  if string.lower(arg[1]) == "u" or string.lower(arg[1]) == "c" then
+    if string.lower(arg[1]) == "c" and arg[2] then
+      if arg[2] == "/" then
+        arg[2] = ""
+      else
+        if not fs.isDir(arg[2]) then
+          err = false
+          printUsage()
+          error("Argument isnt a directory")
+        end
+        if fs.exists(arg[3]) or not arg[3] then
+          err = false
+          printUsage()
+          error("No destination provided/destination exists")
+        end
+      end
+    elseif string.lower(arg[1]) == "u" and arg[2] then
+      if not fs.exists(arg[2]) then
+        err = false
+        print("no file found")
+        printUsage()
+      end
+    else
+      err = false
+      printUsage()
+    end
+  else
+      err = false
+      printUsage()
+  end
+end
+
+local function unPack()
+  local blank = 0
+  local block = 0
+  local curbyte = 0
+  local file = fs.open(arg[2],"rb")
+  
+  local function readByte() curbyte = curbyte + 1 if curbyte == 512 then curbyte = 0 ; block = block + 1 end return file:read(1) end
+  local function readString(num) local str = "" ; for i = 1,num do local byt = readByte() ; if byt ~= 0 then str = str..string.char(byt) end end; return str end
+  local function readBytes(num) local tab = {} ; for i = 1,num do tab[#tab+1] = readByte() end return tab end
+  --function octal_bytes_to_int(str,size) size = size + 1 ; local out = 0 ; local pos = size - 1 ; while pos > 0 do if str[size-pos] ~= 32 and str[size-pos] ~= 0 then out = out * 8 + tonumber(string.char(str[size-pos])) end pos = pos - 1 end return out end
+  local function octal_to_int(str,size) return tonumber(str:sub(0,size),8) or "" end
+  local function afterFileSkip() if curbyte > 0 then readString(512-curbyte) ; curbyte = 0 ; block = block + 1 end end
+  local function dumpFile(nam,size) local fi = fs.open("/"..nam,"wb") if not fi then print("ERROR NO FILE") end for i = 1,size do fi.write(readByte()) end fi.close() ; afterFileSkip() end
+
+  --read headder
+  local dump = ""
+  local function readFileHeader()
+    local name = readString(100)
+    local mode = readBytes(8)
+    local uid = readBytes(8)
+    local gid = readBytes(8)
+    local size = readString(12)
+    local mtime = readBytes(12)
+    local chksum = readBytes(8)
+    local linkflag = readByte()
+    local linkname = readString(100)
+    local magic = readBytes(6)
+    local version = readBytes(2)
+    local uname = readString(32)
+    local gname = readString(32)
+    local devmajor = readBytes(8)
+    local devminor = readBytes(8)
+    afterFileSkip()
+    if name ~= "" then print("extracting: "..name) end
+    if tonumber(string.char(linkflag)) == 5 and not fs.exists("/"..name) then
+      fs.makeDir("/"..name)
+    elseif tonumber(string.char(linkflag)) == 0 then
+      dumpFile(name,octal_to_int(size,11))
+    end
+    local gotit = false
+    if name == "" and uname == "" and gname == "" then
+      gotit = true
+      if blank == 0 then
+        blank = 1
+      elseif blank == 1 then
+        blank = 2
+      end
+    end
+    if gotit == false then
+      blank = 0
+    end
+    name = ""
+  end
+  blank = 0
+  while blank ~=2 do
+    readFileHeader()
+    --os.pullEvent()
+    sleep(0.05)
+  end
+  file.close()
+end
+
+local function pack()
+  local function getFileSize(file)
+    --try fs.getSize and if it is > 512 then return else read manually
+    local size = fs.getSize(file)
+    if size < 513 then
+      --read file manually
+      size = 0
+      local curf = fs.open(file,"rb")
+      local n = curf.read(1)
+      while n do
+        size = size + 1
+        n = curf.read(1)
+      end
+      curf.close()
+      size = size + #fs.getName(file)
+    end
+    return size
+  end
+  --get time
+  local time
+  if not http then
+    Print("Please enabe the http api")
+    Print("Using an old time as a fall back")
+    time = 1397584826
+  else
+    print("grabbing time...")
+    local res = http.get("http://www.timeapi.org/utc/now?format=%25s")
+    time = tonumber(res.readAll())
+    res.close()
+  end
+  --local time = "1397584826"
+  print("done")
+  --you have to go through each folder first and make those
+  local file = fs.open(arg[3],"wb")
+  local folders = {}
+  local entries = {}
+  local function getFolders(path,folder)
+    local files = fs.list(path..folder)
+    folders[#folders+1] = path..folder
+    local curfolders = {}
+    for i = 1,#files do
+      if fs.isDir(path..folder.."/"..files[i]) then
+        curfolders[#curfolders+1] = files[i]
+      else
+        entries[#entries+1] = path..folder.."/"..files[i]
+      end
+    end
+    for i = 1,#curfolders do
+      getFolders(path..folder.."/",curfolders[i])
+    end
+  end
+  --file writing helper functions
+  local fileBuffer = {}
+  local function flushFile() for i = 1,#fileBuffer do file.write(fileBuffer[i]) end if #fileBuffer%512 ~= 0 then for i = 1, 512-(#fileBuffer%512) do file.write(0) end end fileBuffer = {} end
+  local function writeByte(byte) fileBuffer[#fileBuffer+1] = byte end
+  local function writeString(str,size) for i = 1,#str do writeByte(string.byte(str:sub(i,i))) end for i = 1,size-#str do writeByte(0) end end
+  local function writeCharBytes(tab) for i = 1,#tab do writeByte(string.byte(tab[i])) end end
+  local function writeBytes(tab) for i = 1,#tab do writeByte(tab[i]) end end
+  local function basen(n,b) n = math.floor(n) if not b or b == 10 then return tostring(n) end local digits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ" ; local t = {} ; local sign = "" if n < 0 then sign = "-" ; n = -n end repeat local d = (n % b) + 1 ; n = math.floor(n / b) ; table.insert(t, 1, digits:sub(d,d)) until n == 0 return sign .. table.concat(t,"") end
+  local function writeOctal(num,size) local str = basen(num,8) ; str = string.rep(" ",(size-1)-#str)..str.." " ; writeString(tostring(str),12) end
+
+  local function addFile(isdir,file)
+    --make a standard file header
+    if isdir then
+      writeString(file.."/",100)--name
+      writeCharBytes({" "," "," ","7","5","5"," ",string.char(0)})
+      writeCharBytes({" "," "," "," "," ","0"," ",string.char(0)," "," "," "," "," ","0"," ",string.char(0)})
+      writeOctal(0,12)--size
+      writeOctal(time,12)--mtime
+      writeString("       ",8)--chksum
+      writeByte(string.byte("5"))
+    else
+      writeString(file,100)--name
+      writeCharBytes({" "," "," ","6","4","4"," ",string.char(0)})
+      writeCharBytes({" "," "," "," "," ","0"," ",string.char(0)," "," "," "," "," ","0"," ",string.char(0)})
+      writeOctal(getFileSize(file)-#fs.getName(file),12)--size
+      writeOctal(time,12)--mtime
+      writeString("       ",8)--chksum
+      writeByte(string.byte("0"))
+    end
+    writeString("",108)--linkname, magic, and version
+    writeString("ComputerCraft",32)
+    writeString("CC",32)
+  end
+  local str = ""
+
+  getFolders("",arg[2])
+  for i = 1,#folders do
+    addFile(true,folders[i])
+    --calculate and add checksum
+    local sum = 0
+    for i = 1,#fileBuffer do
+      sum = sum + fileBuffer[i]
+    end
+    str = basen(sum+32,8)
+    str = string.rep(" ",(7-1)-#str)..str.." "
+    for i = 1,7 do
+      fileBuffer[i+148] = string.byte(str:sub(i,i))
+    end
+    flushFile()
+  end
+
+  for i = 1,#entries do
+    addFile(false,entries[i])
+    --calculate and add checksum
+    local sum = 0
+    for j = 1,#fileBuffer do
+      sum = sum + fileBuffer[j]
+    end
+    str = basen(sum+32,8)
+    str = string.rep(" ",(7-1)-#str)..str.." "
+    for j = 1,7 do
+      fileBuffer[j+148] = string.byte(str:sub(j,j))
+    end
+    flushFile()
+    --add the file contents
+    local curfile = fs.open(entries[i],"rb")
+    print(entries[i])
+    for j = 1,getFileSize(entries[i]) do
+      writeByte(curfile.read(1))
+    end
+    curfile.close()
+    flushFile()
+    sleep(0.05)
+  end
+  writeByte(0)
+  flushFile()
+  writeByte(0)
+  flushFile()
+  file.close()
+end
+
+if err then
+  --actually do stuffs 
+  if string.lower(arg[1]) == "u" then
+    unPack()
+  elseif string.lower(arg[1]) == "c" then
+    pack()
+  end
+end

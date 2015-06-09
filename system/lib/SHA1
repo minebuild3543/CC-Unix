@@ -1,0 +1,173 @@
+-- SHA1
+-- By KillaVanilla
+
+local function Preprocessing(msg)
+	local msgCp = {}
+	local lastPause = os.clock()
+	for i=1, #msg do
+		msgCp[i] = msg[i]
+		if (os.clock() - lastPause) >= 2.90 then
+			os.queueEvent("")
+			os.pullEvent("")
+			lastPause = os.clock()
+		end
+	end
+	local len = #msgCp*8
+	local bits = #msgCp*8
+	table.insert(msgCp, 0x80)
+	while true do
+		if bits % 512 == 448 then
+			break
+		else
+			table.insert(msgCp, 0)
+			bits = #msgCp*8
+		end
+	end
+	table.insert(msgCp, len)
+	return msgCp
+end
+
+local function breakMsg(message)
+	local chunks = {}
+	local chunk = 1
+	for word=1, #message, 16 do
+		chunks[chunk] = {}
+		for i2=0, 15 do
+			table.insert(chunks[chunk], message[word+i2] or 0)
+		end
+		chunk = chunk+1
+	end
+	return chunks
+end
+
+function leftrotate(a, i)
+	local bitmask = (2^i)-1
+	local shiftOut = bit.band(a, bit.blshift(bitmask, 32-i))
+	if bit.band(shiftOut, 0x80000000) > 0 then -- gotta work around the arithmetic right shift
+		--[[
+		shiftOut = bit.brshift(shiftOut, 1)
+		shiftOut = bit.band(shiftOut, 0x7FFFFFFF)
+		shiftOut = bit.brshift(shiftOut, 31-i)
+		]]
+		shiftOut = bit.band(bit.brshift(shiftOut, 32-i), bitmask)
+	else
+		shiftOut = bit.brshift(shiftOut, 32-i)
+	end
+	local b = bit.band(bit.blshift(a, i), 0xFFFFFFFF)
+	b = bit.bor(b, shiftOut)
+	return (b  % (2^32))
+end
+
+function digest(bytes, debugFile)
+	bytes = Preprocessing(bytes)
+	local chunks = breakMsg(bytes)
+	local h = {}
+	h[0] = 0x67452301
+	h[1] = 0xEFCDAB89
+	h[2] = 0x98BADCFE
+	h[3] = 0x10325476
+	h[4] = 0xC3D2E1F0
+	local debug = false
+	if debugFile then
+		debug = fs.open(debugFile, "w")
+	end
+	local pauseTimer1 = os.clock()
+	for chunkN=1, #chunks do
+		local w = {}
+		for i=0, 15 do
+			w[i] = chunks[chunkN][i+1]
+		end
+		local pauseTimer2 = os.clock()
+		for i=16, 79 do
+			w[i] = bit.bxor( bit.bxor(w[i-3], w[i-8]), bit.bxor(w[i-14], w[i-16]) ) % (2^32)
+			w[i] = leftrotate(w[i], 1)
+			if (os.clock() - pauseTimer2) >= 2.5 then
+				os.queueEvent("")
+				os.pullEvent("")
+				pauseTimer2 = os.clock()
+			end
+		end
+		local a = h[0]
+		local b = h[1]
+		local c = h[2]
+		local d = h[3]
+		local e = h[4]
+		local pauseTimer3 = os.clock()
+		for i=0, 79 do
+			local f = 0
+			local k = 0
+			if (i >= 0) and (i <= 19) then
+				f = bit.bor(bit.band(a, c), bit.band(bit.bnot(b), d)) % (2^32)
+				k = 0x5A827999
+			elseif (i >= 20) and (i <= 39) then
+				f = bit.bxor(b, bit.bxor(c, d)) % (2^32)
+				k = 0x6ED9EBA1
+			elseif (i >= 40) and (i <= 59) then
+				f = bit.bor(bit.band(b, c), bit.bor(bit.band(b, d), bit.band(c, d))) % (2^32)
+				k = 0x8F1BBCDC
+			elseif (i >= 60) and (i <= 79) then
+				f = bit.bxor(b, bit.bxor(c, d)) % (2^32)
+				k = 0xCA62C1D6
+			end
+			local temp = (leftrotate(a, 5)+f+e+k+w[i]) % (2^32)
+			e = d
+			d = c
+			c = leftrotate(b, 30)
+			b = a
+			a = temp
+			if (os.clock() - pauseTimer3) >= 2.80 then
+				os.queueEvent("")
+				os.pullEvent("")
+				pauseTimer3 = os.clock()
+			end
+		end
+		h[0] = (h[0]+a) % (2^32)
+		h[1] = (h[1]+b) % (2^32)
+		h[2] = (h[2]+c) % (2^32)
+		h[3] = (h[3]+d) % (2^32)
+		h[4] = (h[4]+e) % (2^32)
+		if debug then
+			debug.writeLine(chunkN..": "..string.format("%X", h[0]).."|"..string.format("%X", h[1]).."|"..string.format("%X", h[2]).."|"..string.format("%X", h[3]).."|"..string.format("%X", h[4]))
+		end
+		if (os.clock() - pauseTimer1) >= 2.80 then
+			os.queueEvent("")
+			os.pullEvent("")
+			pauseTimer1 = os.clock()
+		end
+	end
+	if debug then
+		debug.close()
+	end
+	local hash = {}
+	for i=0, 4 do
+		table.insert(hash, h[i])
+	end
+	return hash
+end
+
+function digestStr(str, debugFile)
+	local msg = {}
+	for i=1, #str do
+		msg[i] = string.byte(str, i, i)
+	end
+	return digest(msg, debugFile)
+end
+
+function digest2str(d)
+	local str = ""
+	for i=1, #d do
+		str = str..string.format("%X", d[i])
+	end
+	return str
+end
+
+function digest2bytes(d)
+	local bytes = {}
+	for i=1, #d do
+		table.insert(bytes, bit.band(bit.brshift(bit.band(d[i], 0xFF000000), 24), 0xFF))
+		table.insert(bytes, bit.band(bit.brshift(bit.band(d[i], 0xFF0000), 16), 0xFF))
+		table.insert(bytes, bit.band(bit.brshift(bit.band(d[i], 0xFF00), 8), 0xFF))
+		table.insert(bytes, bit.band(d[i], 0xFF))
+	end
+	return bytes
+end
