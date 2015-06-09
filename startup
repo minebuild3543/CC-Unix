@@ -1,0 +1,2 @@
+print("Starting ccLinux kernel")
+shell.run("kernel.lua")
