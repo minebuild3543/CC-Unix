@@ -228,7 +228,7 @@ end
 kernel         = {}
 computer       = {}
 kernel.apis    = {}
-kernel.DIR     = '/kernel' -- blank for root directory. (no trailing slashes)
+kernel.DIR     = '/' -- blank for root directory. (no trailing slashes)
 kernel.dir     = kernel.DIR
 kernel.version ='0.1.0.2-rc2'
 
