@@ -1,2 +1,2 @@
 print("Starting ccLinux kernel")
-shell.run("kernel.lua")
+shell.run("/kernel/kernel.lua debug")

@@ -1,0 +1,33 @@
+[0]: ccLinux v0.1.0.2-rc2
+[0]: Base: /kernel
+[0]: Got advanced computer
+[0]: kernel: Failed to load api 'ram'
+[0]: kernel: path=/kernel/etc/kernel/core/ram.lua
+[0]: kernel: Failed to load api 'devices'
+[0]: kernel: path=/kernel/etc/kernel/core/devices.lua
+[0]: kernel: Failed to load api 'thread'
+[0]: kernel: path=/kernel/etc/kernel/core/thread.lua
+[0]: kernel: Failed to load api 'links'
+[0]: kernel: path=/kernel/etc/kernel/core/links.lua
+[0]: kernel: Failed to load api 'debug'
+[0]: kernel: path=/kernel/etc/kernel/core/debug.lua
+[0]: kernel: Failed to load api 'vfs'
+[0]: kernel: path=/kernel/etc/kernel/core/vfs.lua
+[0]: kernel: Failed to load api 'rc'
+[0]: kernel: path=/kernel/etc/kernel/core/rc.lua
+[0]: kernel: Failed to load api 'aeslua'
+[0]: kernel: path=/kernel/etc/kernel/ext/aeslua/aeslua.lua
+[0]: kernel: Failed to load api 'JSON'
+[0]: kernel: path=/kernel/etc/kernel/ext/JSON/JSON.lua
+[0]: kernel: Failed to load api 'luajit'
+[0]: kernel: path=/kernel/etc/kernel/ext/luajit/luajit.lua
+[0]: kernel: Failed to load api 'base64'
+[0]: kernel: path=/kernel/etc/kernel/ext/base64/base64.lua
+[0]: kernel: Failed to load api 'sha'
+[0]: kernel: path=/kernel/etc/kernel/ext/sha/sha.lua
+[0]: kernel: Failed to load api 'libcomp'
+[0]: kernel: path=/kernel/etc/kernel/ext/libcomp/libcomp.lua
+[0]: kernel: API is using class wrapper
+[0]: kernel: Failed to load api 'utils'
+[0]: kernel: path=/kernel/etc/kernel/core/classes/utils.lua
+[0]: Initializing RAM
