@@ -602,6 +602,11 @@ kernel.loadAPI('base64', 'ext')
 kernel.loadAPI('sha', 'ext')
 kernel.loadAPI('libcomp', 'ext')
 
+-- Load Debian-CC APIs, this is needed for some of the programs
+kernel.loadAPI('DebAPI', 'ext')
+kernel.loadAPI('DialogAPI', 'ext')
+kernel.loadAPI('MenuAPI', 'ext')
+
 -- Load MatAlcDev class APIs
 kernel.loadAPI("utils", "class")
 

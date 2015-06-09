@@ -1,10 +1,5 @@
-function reboot_rec()
-os.loadAPI("/system/lib/RecEnvAPI")
-RecEnvAPI.start()
-return
-end
-function error(errreq)
-print("[Error!] ", errreq)
+function debError(errreq)
+print("[ERROR] ", errreq)
 end
 function shutdown()
 print("Shutting down computer..")
@@ -62,13 +57,16 @@ syslog.writeLine(msg)
 syslog.close()
 end
 function request(req)
-write(req .. "? (Y/n) ")
+write(req .. "? (Y/N)")
 local presel=read()
 if presel=="Y" then
 reqselect=true
 end
 if presel=="y" then
 reqselect=true
+en
+if presel=="N" then
+reqselect=false
 end
 if presel=="n" then
 reqselect=false
